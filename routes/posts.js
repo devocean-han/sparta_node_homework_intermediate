@@ -7,7 +7,7 @@ const express = require("express");
 const router = express.Router();
 
 // DB 모델 임포트
-const { Post, User } = require("../models");
+const { Post, User, Comment} = require("../models");
 
 // 사용자 인증 미들웨어 임포트
 const authMiddleware = require('../middlewares/auth-middleware');
@@ -218,7 +218,69 @@ router.delete('/posts/:_postId', authMiddleware, async (req, res) => {
 // - 로그인 토큰을 전달했을 때에만 좋아요 할 수 있게 하기
 // - 로그인 토큰에 해당하는 사용자가 좋아요 한 글에 한해서, 좋아요 취소 할 수 있게 하기
 // - 게시글 목록 조회시 글의 좋아요 갯수도 같이 표출하기
+// - 응답 예시: { "message": "게시글의 좋아요를 등록하였습니다."},
+//             { "message": "게시글의 좋아요를 취소하였습니다."}
 router.put('/posts/:postId/like', authMiddleware, async (req, res) => {
+    const { postId } = req.params;
+    const { userId } = res.locals.user;
+
+    const post = await Post.findByPk(postId);
+    // 404 Not Found
+    // 해당 id의 게시글이 존재하지 않는 경우
+    // => 라고는 하는데, 어떻게 보이는 게시글의 '좋아요' 버튼을 눌렀다가 취소했다가
+    //      하는데 게시글이 존재하지 않을 수 있지? 이런 극한의 예외까지 고려해야 하는가...
+    if (!post) { // post === null
+        return res.status(404).json({ errorMessage: "게시글이 존재하지 않습니다." });
+    }
+
+    try {
+        // 1. 사용자의 '좋아요' 목록에 이미 해당 게시글Id가 있는지 검사
+        const user = await User.findByPk(userId);
+        const likes_list = user.likes.split(' '); // ''.split(' ')을 하더라도 ['']이 반환되므로 안전함.
+
+        // 2. '좋아요'가 안 되어 있는 상태라면
+        if (likes_list.indexOf(postId) === -1) { // postId는 처음부터 이미 String일 것이다.
+            // likes_list = ['3' '5' '11' '2']
+            // likes_list.includes('1') => false
+            // likes_list.includes('2') => true
+            // likes_list.indexOf('11') => 2
+            // likes_list.splice(2, 1) => '11', likes_list = ['3', '5', '2']
+
+            // 2-1. 사용자의 '좋아요' 목록에 해당 게시글 번호를 덧붙인다...
+            // 일단 Users 테이블에 likes: STRING 필드가 있다고 가정하고 진행한다.
+            user.likes += ` ${postId}`;
+            await user.save();
+
+            // 2-2. 게시글의 좋아요 수를 1 증가시킨다.
+            post.likes += 1;
+            await post.save();
+
+            // 200 Success
+            return res.status(200).json({ message: "게시글에 좋아요를 등록하였습니다." })
+        }
+
+        // 3. '좋아요'가 되어 있는 상태라면
+        // 3-1. 사용자의 '좋아요' 목록에서 해당 게시글 번호를 뺀다.
+        const like_index = likes_list.indexOf(postId);
+        const updated_likes_list = likes_list.splice(like_index, 1);
+        user.likes = updated_likes_list.join(' ');
+        await user.save();
+
+        // 3-2. 게시글의 좋아요 수를 1 감소시키다.
+        post.likes -= 1;
+        await post.save();
+
+        // 200 Success
+        return res.status(200).json({ message: "게시글의 좋아요를 취소하였습니다." })
+
+    } catch (error) {
+        // 400 Bad Request
+        // 이상의 예외 케이스에서 처리하지 못한 에러가 발생
+        console.log(error.message);
+        return res.status(400).json({ errorMessage: "게시글 좋아요에 실패하였습니다." });
+    }
+
+    // --- 1번 방식으로 일단 낙찰 -----------------------------------------------------------
     // 1. 게시글에 좋아요 개수 올리고
     //    사용자에게 '좋아요'한 게시글 번호들을 들고 있게 하기
     //    => 사용자 측에서는 게시글 번호를 문자열로 뒤에 붙이면서 계속 추가할 수 있게 하면 되겠다.
@@ -243,11 +305,43 @@ router.put('/posts/:postId/like', authMiddleware, async (req, res) => {
 })
 
 // GET - 자기가 좋아요한 게시글 목록 조회
+// - postId, userId, (User) nickname, title, createdAt, updatedAt, likes 가져오기
 // - 로그인 토큰을 전달했을 때에만 좋아요 게시글 조회할 수 있게 하기
 // - 로그인 토큰에 해당하는 사용자가 좋아요 한 글에 한해서, 조회할 수 있게 하기
 // - 제일 좋아요가 많은 게시글을 맨 위에 정렬하기
 router.get('/posts/like', authMiddleware, async (req, res) => {
+    const { userId } = res.locals.user;
+    const user = await User.findByPk(userId);
+    const likes_postIds = user.likes.split(' ');
 
+    try {
+
+        // 데이터 가져오기: postId, userId, (User) nickname, title, createdAt, updatedAt, likes
+        const like_posts = await Post.findAll({
+            raw: true,
+            include: [{
+                model: User,
+                // as: 'user',
+                association: Post.belongsTo(User, {
+                    foreignKey: 'userId',
+                    constraints: false,
+                }),
+                attributes: []
+            }],
+            where: { postId: likes_postIds },
+            order: [
+                ['likes', 'DESC']
+            ],
+            attributes: ['postId', 'userId', 'User.nickname', 'title', 'createdAt', 'updatedAt', 'likes']
+        });
+        res.status(200).json({ data: like_posts })
+
+    } catch (error) {
+        // 400 Bad Request
+        // 이상의 예외 케이스에서 처리하지 못한 에러가 발생
+        console.log(error.message);
+        return res.status(400).json({ errorMessage: "좋아요 게시글 조회에 실패하였습니다." });
+    }
 })
 
 
