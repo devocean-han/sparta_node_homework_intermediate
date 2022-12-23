@@ -67,7 +67,9 @@ router.get('/posts', async (req, res) => {
         const post_list = await Post.findAll({
             raw: true,
             include: [{
-                association: User.hasMany(Post, {
+                model: User,
+                association: Post.belongsTo(User, {
+                        // => User.hasMany(Post, )로 했을 때는 왜인지 에러가 발생.
                     foreignKey: 'userId',
                     constraints: false,
                 }),
@@ -102,7 +104,9 @@ router.get('/posts/:_postId', async (req, res) => {
         const post_detail = await Post.findOne({
             raw: true,
             include: [{
-                association: User.hasMany(Post, { // Post.belongsTo(User) 대신 해봤는데 잘 될까.
+                model: User,
+                association: Post.belongsTo(User, { // Post.belongsTo(User) 대신 해봤는데 잘 될까. => 잘 안됨..!
+                        // => User.hasMany(Post, )로 했을 때는 왜인지 에러가 발생.
                     foreignKey: 'userId',
                     constraints: false,
                 }),
